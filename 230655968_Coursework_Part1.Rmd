@@ -1,0 +1,130 @@
+---
+title: "ST2195 Coursework Part 1"
+author: "Richard Hardy"
+date: "`26/3/25`"
+output: html_document
+---
+
+# Introduction
+
+This report implements a Metropolis-Hastings algorithm in R to draw samples from a target distribution.
+The analysis replicates the original work done in Python and includes diagnostics such as $\hat{R}$ values across varying proposal scales.
+
+# Setup
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+```
+
+# Part (a): Metropolis-Hastings Sampling
+
+```{r}
+# Define target density function
+f <- function(x) {
+  0.5 * exp(-abs(x))
+}
+
+# Log of target density for numerical stability
+log_f <- function(x) {
+  -abs(x) - log(2)
+}
+
+# Metropolis-Hastings algorithm
+metropolis_hastings <- function(N = 10000, s = 1, x0 = 0) {
+  samples <- numeric(N)
+  samples[1] <- x0
+  
+  for (i in 2:N) {
+    x_star <- rnorm(1, mean = samples[i - 1], sd = s)
+    log_r <- log_f(x_star) - log_f(samples[i - 1])
+    if (log(runif(1)) < log_r) {
+      samples[i] <- x_star
+    } else {
+      samples[i] <- samples[i - 1]
+    }
+  }
+  return(samples)
+}
+
+# Run the sampler
+set.seed(123)
+samples <- metropolis_hastings()
+
+# Sample statistics
+sample_mean <- mean(samples)
+sample_sd <- sd(samples)
+cat("Sample Mean:", sample_mean, "\n")
+cat("Sample Standard Deviation:", sample_sd, "\n")
+```
+
+```{r, fig.width=8, fig.height=5}
+# Plot histogram with target density
+x_vals <- seq(-10, 10, length.out = 1000)
+f_x <- f(x_vals)
+f_df <- data.frame(x = x_vals, y = f_x)
+
+hist_data <- data.frame(samples = samples)
+
+ggplot(hist_data, aes(x = samples)) +
+  geom_histogram(aes(y = ..density..), bins = 50, fill = "deepskyblue", color = "black") +
+  geom_line(data = f_df, aes(x = x, y = y), color = "red", size = 1.2) +
+  labs(title = "Metropolis-Hastings Sampling (N = 10000, s = 1)", x = "x", y = "Density") +
+  theme_minimal() +
+
+  labs(title = "Metropolis-Hastings Sampling (N = 10000, s = 1)",
+       x = "x", y = "Density") +
+  theme_minimal()
+```
+
+# Part (b): R-hat Diagnostic Across Proposal Scale
+
+```{r}
+calculate_r_hat <- function(chains) {
+  J <- length(chains)
+  N <- length(chains[[1]])
+  
+  M_j <- sapply(chains, mean)
+  V_j <- sapply(chains, var)
+  
+  W <- mean(V_j)
+  M <- mean(M_j)
+  B <- var(M_j)
+  
+  R_hat <- sqrt((B + W) / W)
+  return(R_hat)
+}
+
+# Run chains with varying proposal scale
+set.seed(123)
+N <- 2000
+s_values <- seq(0.001, 1, length.out = 50)
+J <- 4
+r_hat_values <- numeric(length(s_values))
+
+for (i in seq_along(s_values)) {
+  s <- s_values[i]
+  chains <- lapply(1:J, function(j) {
+    x0 <- runif(1, -5, 5)
+    metropolis_hastings(N, s, x0)
+  })
+  r_hat_values[i] <- calculate_r_hat(chains)
+}
+
+rhat_df <- data.frame(s = s_values, R_hat = r_hat_values)
+```
+
+```{r, fig.width=8, fig.height=5}
+# Plot R-hat values
+ggplot(rhat_df, aes(x = s, y = R_hat)) +
+  geom_line(color = "purple", size = 1) +
+  geom_hline(yintercept = 1.05, color = "red", linetype = "dashed") +
+  labs(title = "R-hat Diagnostic Over Proposal Scale (s)",
+       x = "Proposal SD (s)", y = "R-hat") +
+  theme_minimal()
+```
+
+# Conclusion
+
+This R implementation of the Metropolis-Hastings algorithm successfully replicates the statistical behavior and diagnostics of the original Python analysis. The $\hat{R}$ diagnostic highlights the sensitivity of convergence to the choice of proposal distribution scale.

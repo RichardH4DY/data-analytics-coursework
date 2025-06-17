@@ -1,0 +1,265 @@
+---
+title: "ST2195 Coursework Part 2"
+author: "Richard Hardy"
+date: "28/03/25"
+output: html_document
+---
+
+# Introduction
+
+This R Markdown file is the coursework analysis done in R. It includes multiple linear regressions and visual analysis of flight delays from 2003 to 2007, including by time of day, weekday, season, and aircraft age. This rmd has the full description of the steps taken and the various outputs.
+
+# Setup
+install.packages("rlang", repos = "https://cloud.r-project.org/")
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(readr)
+library(janitor)
+library(broom)
+library(ggplot2)
+library(scales)
+library(knitr)
+library(dplyr)
+library(purrr)
+```
+
+# Load and Clean Data
+
+```{r}
+file_paths <- c("2003.csv.bz2", "2004.csv.bz2", "2005.csv.bz2", "2006.csv.bz2", "2007.csv.bz2")
+df <- file_paths %>%
+  map_dfr(read_csv) %>%
+  clean_names()
+
+delay_columns <- c("arr_delay", "dep_delay", "carrier_delay", "weather_delay", 
+                   "nas_delay", "security_delay", "late_aircraft_delay")
+
+df_clean <- df %>%
+  drop_na(any_of(delay_columns))
+```
+
+# OLS Regression: Arrival and Departure Delay
+
+```{r}
+set.seed(42)
+df_sample <- df_clean %>% sample_n(100000)
+
+model_arr <- lm(arr_delay ~ carrier_delay + weather_delay + nas_delay +
+                  security_delay + late_aircraft_delay, data = df_sample)
+
+model_dep <- lm(dep_delay ~ carrier_delay + weather_delay + nas_delay +
+                  security_delay + late_aircraft_delay, data = df_sample)
+
+summary(model_arr)
+summary(model_dep)
+```
+
+# Model Summary Table
+
+```{r}
+results <- tibble(
+  Measure = c("Arrival Delay", "Departure Delay"),
+  R2 = c(summary(model_arr)$r.squared, summary(model_dep)$r.squared),
+  Adjusted_R2 = c(summary(model_arr)$adj.r.squared, summary(model_dep)$adj.r.squared),
+  F_Statistic = c(summary(model_arr)$fstatistic[1], summary(model_dep)$fstatistic[1])
+)
+kable(results, caption = "Model Summary for Arrival and Departure Delay")
+```
+
+# Extract Hour and Plot Average Delay by Hour
+
+```{r}
+df_hour <- df %>%
+  mutate(hour = floor(crs_dep_time / 100)) %>%
+  filter(!is.na(hour)) %>%
+  group_by(hour) %>%
+  summarise(avg_dep_delay = mean(dep_delay, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(df_hour, aes(x = factor(hour), y = avg_dep_delay)) +
+  geom_bar(stat = "identity", fill = "royalblue") +
+  geom_text(aes(label = round(avg_dep_delay, 1)), vjust = -0.5, size = 3) +
+  labs(title = "Average Departure Delay by Hour (2003–2007)",
+       x = "Hour of the Day", y = "Average Delay (minutes)") +
+  theme_minimal()
+```
+
+# Delay by Day of the Week
+
+```{r}
+day_labels <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+df_day <- df %>%
+  filter(day_of_week %in% 1:7) %>%
+  group_by(day_of_week) %>%
+  summarise(avg_dep_delay = mean(dep_delay, na.rm = TRUE)) %>%
+  mutate(day_label = factor(day_labels[day_of_week], levels = day_labels))
+
+ggplot(df_day, aes(x = day_label, y = avg_dep_delay)) +
+  geom_bar(stat = "identity", fill = "darkorange") +
+  geom_text(aes(label = round(avg_dep_delay, 1)), vjust = -0.5, size = 3) +
+  labs(title = "Average Departure Delay by Day of the Week (2003–2007)",
+       x = "Day of the Week", y = "Average Delay (minutes)") +
+  theme_minimal()
+```
+
+# Delay by Season
+
+```{r}
+get_season <- function(month) {
+  if (month %in% c(12, 1, 2)) return("Winter")
+  else if (month %in% c(3, 4, 5)) return("Spring")
+  else if (month %in% c(6, 7, 8)) return("Summer")
+  else return("Autumn")
+}
+
+df_season <- df %>%
+  filter(!is.na(dep_delay)) %>%
+  mutate(season = map_chr(month, get_season)) %>%
+  group_by(season) %>%
+  summarise(avg_dep_delay = mean(dep_delay, na.rm = TRUE)) %>%
+  mutate(season = factor(season, levels = c("Winter", "Spring", "Summer", "Autumn")))
+
+ggplot(df_season, aes(x = season, y = avg_dep_delay)) +
+  geom_bar(stat = "identity", fill = "forestgreen") +
+  geom_text(aes(label = round(avg_dep_delay, 1)), vjust = -0.5, size = 3) +
+  labs(title = "Average Departure Delay by Season (2003–2007)",
+       x = "Season", y = "Average Delay (minutes)") +
+  theme_minimal()
+```
+
+# Delay Percentage by Aircraft Age Group
+
+```{r}
+aircraft_info <- read_csv("plane-data.csv") %>%
+  clean_names()
+
+df_age <- df %>%
+  select(year, tail_num, arr_delay) %>%
+  rename(tailnum = tail_num) %>%
+  left_join(aircraft_info, by = "tailnum") %>%
+  filter(!is.na(year.y), !is.na(arr_delay)) %>%
+  mutate(
+    year.x = as.numeric(year.x),
+    year.y = as.numeric(year.y),
+    aircraft_age = year.x - year.y
+  ) %>%
+  filter(aircraft_age >= 0) %>%
+  mutate(
+    age_group = cut(aircraft_age, breaks = c(0, 4, 9, 14, 19, 100),
+                    labels = c("0–4 yrs", "5–9 yrs", "10–14 yrs", "15–19 yrs", "20+ yrs")),
+    is_delayed = arr_delay >= 15
+  )
+
+df_grouped <- df_age %>%
+  group_by(age_group) %>%
+  summarise(delayed = sum(is_delayed),
+            total = n(),
+            delay_percent = 100 * delayed / total)
+
+ggplot(df_grouped, aes(x = age_group, y = delay_percent)) +
+  geom_bar(stat = "identity", fill = "mediumslateblue") +
+  geom_text(aes(label = paste0(round(delay_percent, 1), "%")), vjust = -0.5, size = 3) +
+  labs(title = "Percentage of Delayed Flights by Aircraft Age Group (2003–2007)",
+       x = "Aircraft Age Group", y = "Delay Percentage (%)") +
+  theme_minimal()
+```
+
+# (Optional) Violin Plot of Arrival Delay by Aircraft Age Category
+
+```{r}
+age_category <- function(age) {
+  if (age <= 4) return("New Aircraft")
+  else if (age <= 14) return("Standard Aircraft")
+  else return("Old Aircraft")
+}
+
+df_violin <- df_age %>%
+  filter(arr_delay >= 0 & arr_delay < 200) %>%
+  mutate(age_category = map_chr(aircraft_age, age_category))
+
+ggplot(df_violin, aes(x = age_category, y = arr_delay, fill = age_category)) +
+  geom_violin(trim = TRUE) +
+  labs(title = "Arrival Delay Distribution by Aircraft Age Category (2003–2007)",
+       x = "Aircraft Age Category", y = "Arrival Delay (mins)") +
+  theme_minimal()
+```
+
+
+# Logistic Regression for Diverted Flights by Year
+
+```{r}
+library(tidymodels)
+library(readr)
+library(janitor)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+
+airport_coords <- read_csv("airports.csv") %>%
+  clean_names() %>%
+  select(iata, lat, long) %>%
+  rename(airport = iata)
+
+process_year <- function(year) {
+  message("Processing year: ", year)
+  file <- paste0(year, ".csv.bz2")
+
+  df <- read_csv(file, show_col_types = FALSE, progress = FALSE) %>%
+    clean_names() %>%
+    select(month, day_of_week, crs_dep_time, crs_arr_time,
+           unique_carrier, origin, dest, distance, diverted) %>%
+    drop_na() %>%
+    slice(1:200000) %>%
+    mutate(
+      crs_dep_hour = crs_dep_time %/% 100,
+      crs_arr_hour = crs_arr_time %/% 100,
+      diverted = as.factor(diverted)
+    ) %>%
+    left_join(airport_coords, by = c("origin" = "airport")) %>%
+    rename(origin_lat = lat, origin_lon = long) %>%
+    left_join(airport_coords, by = c("dest" = "airport")) %>%
+    rename(dest_lat = lat, dest_lon = long) %>%
+    mutate(across(c(origin_lat, origin_lon, dest_lat, dest_lon), ~ replace_na(., 0))) %>%
+    mutate(
+      carrier_encoded = as.integer(factor(unique_carrier)),
+      origin_encoded = as.integer(factor(origin)),
+      dest_encoded = as.integer(factor(dest))
+    )
+
+  rec <- recipe(diverted ~ month + day_of_week + crs_dep_hour + crs_arr_hour +
+                  distance + origin_lat + origin_lon + dest_lat + dest_lon + carrier_encoded, data = df) %>%
+    step_normalize(all_predictors())
+
+  model_spec <- logistic_reg(mode = "classification") %>%
+    set_engine("glm")
+
+  wf <- workflow() %>%
+    add_model(model_spec) %>%
+    add_recipe(rec)
+
+  fit <- fit(wf, data = df)
+
+  tidy(fit$fit$fit) %>%
+    filter(term != "(Intercept)") %>%
+    select(term, estimate) %>%
+    mutate(year = as.character(year))
+}
+
+years <- 2003:2007
+all_coefs <- map_dfr(years, process_year)
+
+ggplot(all_coefs, aes(x = year, y = estimate, group = term, color = term)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Logistic Regression Coefficients for Diverted Flights (2003–2007)",
+       x = "Year", y = "Coefficient Value") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+
+# Conclusion
+
+This analysis shows the plots and regression models using R. The results offer detailed insights into how various factors affect flight delays over multiple years. Overall, these insights can help airlines and passengers make more informed scheduling decisions and optimize operations for greater reliability
